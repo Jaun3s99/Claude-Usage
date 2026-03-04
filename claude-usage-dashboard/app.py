@@ -42,18 +42,18 @@ except Exception:
 # Anthropic Usage API
 # ──────────────────────────────────────────────
 
-def fetch_workspace_names(headers: dict) -> dict:
-    """Fetch workspace ID → name mapping from Anthropic API."""
+def fetch_api_key_names(headers: dict) -> dict:
+    """Fetch API key ID → name mapping from Anthropic API."""
     try:
         resp = requests.get(
-            "https://api.anthropic.com/v1/workspaces",
+            "https://api.anthropic.com/v1/api_keys",
             headers=headers,
             params={"limit": 100},
             timeout=10,
         )
         if resp.ok:
-            workspaces = resp.json().get("data", [])
-            return {ws["id"]: ws["name"] for ws in workspaces if "id" in ws and "name" in ws}
+            keys = resp.json().get("data", [])
+            return {k["id"]: k.get("name", k["id"]) for k in keys if "id" in k}
     except Exception:
         pass
     return {}
@@ -91,10 +91,20 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     starting_at = f"{start_date}T00:00:00Z"
     ending_at   = f"{end_date}T23:59:59Z"
 
-    # Fetch workspace name mapping (ID → readable name)
-    workspace_names = fetch_workspace_names(headers)
+    # Fetch API key names AND workspace names from Anthropic
+    api_key_names = fetch_api_key_names(headers)
+    workspace_names = {}
+    try:
+        ws_resp = requests.get(
+            "https://api.anthropic.com/v1/workspaces",
+            headers=headers, params={"limit": 100}, timeout=10,
+        )
+        if ws_resp.ok:
+            workspace_names = {w["id"]: w["name"] for w in ws_resp.json().get("data", []) if "id" in w}
+    except Exception:
+        pass
 
-    # ── Fetch token usage ──────────────────────────────────────────
+    # ── Fetch token usage grouped by workspace + api_key ──────────
     usage_resp = requests.get(
         "https://api.anthropic.com/v1/organizations/usage_report/messages",
         headers=headers,
@@ -104,6 +114,7 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
             ("bucket_width", "1d"),
             ("group_by[]", "model"),
             ("group_by[]", "workspace_id"),
+            ("group_by[]", "api_key_id"),
             ("limit", 31),
         ],
         timeout=30,
@@ -112,36 +123,53 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
         raise ValueError(f"Usage API error {usage_resp.status_code}: {usage_resp.text[:400]}")
 
     # ── Normalise into our flat record format ──────────────────────
-    # Calculate cost per-model using pricing table (most accurate approach)
     records = []
     for bucket in usage_resp.json().get("data", []):
         date = bucket.get("starting_at", start_date)[:10]
         for r in bucket.get("results", []):
             model  = r.get("model", "unknown")
             ws_id  = r.get("workspace_id") or "default"
-            inp    = r.get("uncached_input_tokens", 0) + r.get("cache_read_input_tokens", 0)
-            out    = r.get("output_tokens", 0)
+            key_id = r.get("api_key_id") or "unknown"
 
-            # Find best pricing match (exact or prefix match)
+            inp = r.get("uncached_input_tokens", 0) + r.get("cache_read_input_tokens", 0)
+            out = r.get("output_tokens", 0)
+
+            # Cost per model using pricing table
             in_p, out_p = PRICING.get(model, (3.00, 15.00))
-            for key, prices in PRICING.items():
-                if model.startswith(key.rsplit("-", 1)[0]):
+            for pkey, prices in PRICING.items():
+                if model.startswith(pkey.rsplit("-", 1)[0]):
                     in_p, out_p = prices
                     break
             cost = (inp / 1_000_000 * in_p) + (out / 1_000_000 * out_p)
 
-            # Resolve workspace name: manual mapping → API lookup → ID fallback
-            ws_name = (
-                WORKSPACE_NAMES.get(ws_id)
-                or workspace_names.get(ws_id)
-                or ("Default" if ws_id == "default" else ws_id)
-            )
+            # Person name resolution:
+            # - Laura/Nicolette/Megan have their own workspace → use workspace name
+            # - Nicole/Paul/Juan share default workspace → use API key name
+            ws_name = workspace_names.get(ws_id, "")
+            is_default_ws = (ws_name.lower() in ("default", "") or ws_id == "default")
+
+            if is_default_ws:
+                # Distinguish by API key name (Nicole, Paul, Juan)
+                person_name = (
+                    WORKSPACE_NAMES.get(key_id)
+                    or api_key_names.get(key_id)
+                    or f"Key {key_id[:8]}"
+                )
+                unique_id = key_id  # use key_id so each person gets their own row
+            else:
+                # Own workspace (Laura, Nicolette, Megan)
+                person_name = (
+                    WORKSPACE_NAMES.get(ws_id)
+                    or ws_name
+                    or ws_id
+                )
+                unique_id = ws_id
 
             records.append({
                 "date":           date,
                 "model":          model,
-                "workspace_id":   ws_id,
-                "workspace_name": ws_name,
+                "workspace_id":   unique_id,
+                "workspace_name": person_name,
                 "input_tokens":   inp,
                 "output_tokens":  out,
                 "total_tokens":   inp + out,
@@ -396,3 +424,4 @@ def health():
 # Local dev entry point
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
+    app.run(debug=True, port=5000)
