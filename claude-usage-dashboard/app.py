@@ -70,13 +70,14 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     usage_resp = requests.get(
         "https://api.anthropic.com/v1/organizations/usage_report/messages",
         headers=headers,
-        params={
-            "starting_at": starting_at,
-            "ending_at":   ending_at,
-            "bucket_width": "1d",
-            "group_by": ["model", "workspace_id"],
-            "limit": 31,
-        },
+        params=[
+            ("starting_at", starting_at),
+            ("ending_at",   ending_at),
+            ("bucket_width", "1d"),
+            ("group_by[]", "model"),
+            ("group_by[]", "workspace_id"),
+            ("limit", 31),
+        ],
         timeout=30,
     )
     if not usage_resp.ok:
@@ -86,13 +87,13 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     cost_resp = requests.get(
         "https://api.anthropic.com/v1/organizations/cost_report",
         headers=headers,
-        params={
-            "starting_at": starting_at,
-            "ending_at":   ending_at,
-            "bucket_width": "1d",
-            "group_by": ["workspace_id"],
-            "limit": 31,
-        },
+        params=[
+            ("starting_at", starting_at),
+            ("ending_at",   ending_at),
+            ("bucket_width", "1d"),
+            ("group_by[]", "workspace_id"),
+            ("limit", 31),
+        ],
         timeout=30,
     )
     # Build cost lookup {date: {workspace_id: cost_usd}}
