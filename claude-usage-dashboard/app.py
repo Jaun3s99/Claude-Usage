@@ -75,7 +75,7 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
             "ending_at":   ending_at,
             "bucket_width": "1d",
             "group_by": ["model", "workspace_id"],
-            "limit": 1000,
+            "limit": 31,
         },
         timeout=30,
     )
@@ -91,7 +91,7 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
             "ending_at":   ending_at,
             "bucket_width": "1d",
             "group_by": ["workspace_id"],
-            "limit": 1000,
+            "limit": 31,
         },
         timeout=30,
     )
