@@ -29,6 +29,14 @@ ANTHROPIC_ADMIN_KEY = os.environ.get("ANTHROPIC_ADMIN_KEY")
 # the real API connected. Great for testing your dashboard design first.
 USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "true").lower() == "true"
 
+# Optional: manually map workspace IDs to readable names.
+# In Vercel env vars, set WORKSPACE_NAMES as JSON, e.g.:
+# {"wrkspc_abc123": "Engineering", "wrkspc_def456": "Sales"}
+try:
+    WORKSPACE_NAMES = json.loads(os.environ.get("WORKSPACE_NAMES", "{}"))
+except Exception:
+    WORKSPACE_NAMES = {}
+
 
 # ──────────────────────────────────────────────
 # Anthropic Usage API
@@ -103,52 +111,37 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     if not usage_resp.ok:
         raise ValueError(f"Usage API error {usage_resp.status_code}: {usage_resp.text[:400]}")
 
-    # ── Fetch cost data ────────────────────────────────────────────
-    cost_resp = requests.get(
-        "https://api.anthropic.com/v1/organizations/cost_report",
-        headers=headers,
-        params=[
-            ("starting_at", starting_at),
-            ("ending_at",   ending_at),
-            ("bucket_width", "1d"),
-            ("group_by[]", "workspace_id"),
-            ("limit", 31),
-        ],
-        timeout=30,
-    )
-    # Build cost lookup {date: {workspace_id: cost_usd}}
-    # Note: amount is in dollars (not cents) based on API response
-    cost_lookup = {}
-    if cost_resp.ok:
-        for bucket in cost_resp.json().get("data", []):
-            date = bucket.get("starting_at", "")[:10]
-            for r in bucket.get("results", []):
-                ws = r.get("workspace_id") or "default"
-                amount = float(r.get("amount", 0))  # already in USD
-                cost_lookup.setdefault(date, {})
-                cost_lookup[date][ws] = cost_lookup[date].get(ws, 0) + amount
-
     # ── Normalise into our flat record format ──────────────────────
+    # Calculate cost per-model using pricing table (most accurate approach)
     records = []
     for bucket in usage_resp.json().get("data", []):
         date = bucket.get("starting_at", start_date)[:10]
         for r in bucket.get("results", []):
-            model      = r.get("model", "unknown")
-            ws_id      = r.get("workspace_id") or "default"
-            inp        = r.get("uncached_input_tokens", 0) + r.get("cache_read_input_tokens", 0)
-            out        = r.get("output_tokens", 0)
+            model  = r.get("model", "unknown")
+            ws_id  = r.get("workspace_id") or "default"
+            inp    = r.get("uncached_input_tokens", 0) + r.get("cache_read_input_tokens", 0)
+            out    = r.get("output_tokens", 0)
 
-            # Cost: use cost report if available, else estimate from pricing table
-            cost = cost_lookup.get(date, {}).get(ws_id, None)
-            if cost is None:
-                in_p, out_p = PRICING.get(model, (3.00, 15.00))
-                cost = (inp / 1_000_000 * in_p) + (out / 1_000_000 * out_p)
+            # Find best pricing match (exact or prefix match)
+            in_p, out_p = PRICING.get(model, (3.00, 15.00))
+            for key, prices in PRICING.items():
+                if model.startswith(key.rsplit("-", 1)[0]):
+                    in_p, out_p = prices
+                    break
+            cost = (inp / 1_000_000 * in_p) + (out / 1_000_000 * out_p)
+
+            # Resolve workspace name: manual mapping → API lookup → ID fallback
+            ws_name = (
+                WORKSPACE_NAMES.get(ws_id)
+                or workspace_names.get(ws_id)
+                or ("Default" if ws_id == "default" else ws_id)
+            )
 
             records.append({
                 "date":           date,
                 "model":          model,
                 "workspace_id":   ws_id,
-                "workspace_name": workspace_names.get(ws_id, ws_id if ws_id != "default" else "Default"),
+                "workspace_name": ws_name,
                 "input_tokens":   inp,
                 "output_tokens":  out,
                 "total_tokens":   inp + out,
@@ -157,6 +150,28 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
             })
 
     return records
+
+
+@app.route("/api/workspaces")
+def list_workspaces():
+    """Shows raw workspace IDs from Anthropic — use these to set WORKSPACE_NAMES in Vercel."""
+    try:
+        headers = {
+            "x-api-key": ANTHROPIC_ADMIN_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        resp = requests.get(
+            "https://api.anthropic.com/v1/workspaces",
+            headers=headers,
+            params={"limit": 100},
+            timeout=10,
+        )
+        if resp.ok:
+            return jsonify({"workspaces": resp.json().get("data", []), "manual_mapping": WORKSPACE_NAMES})
+        return jsonify({"error": f"HTTP {resp.status_code}: {resp.text[:200]}", "manual_mapping": WORKSPACE_NAMES})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def generate_mock_usage(start_date: str, end_date: str) -> list:
@@ -381,4 +396,3 @@ def health():
 # Local dev entry point
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
