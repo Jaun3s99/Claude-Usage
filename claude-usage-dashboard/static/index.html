@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude API Usage — Daversa Partners</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --brand-dark:  #1a1a2e;
+      --brand-mid:   #16213e;
+      --brand-blue:  #0f3460;
+      --accent:      #e94560;
+      --accent-soft: #f97316;
+      --claude-orange: #d97706;
+      --text-primary: #f0f4f8;
+      --text-muted:   #94a3b8;
+      --card-bg:      #1e2a3a;
+      --card-border:  #2d3f55;
+      --green:        #10b981;
+      --purple:       #8b5cf6;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--brand-dark);
+      color: var(--text-primary);
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(135deg, var(--brand-mid) 0%, var(--brand-blue) 100%);
+      border-bottom: 1px solid var(--card-border);
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 68px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .logo-badge {
+      background: var(--claude-orange);
+      color: white;
+      font-weight: 700;
+      font-size: 13px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      letter-spacing: 0.5px;
+    }
+    .header-title {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .header-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .sync-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .sync-btn:hover { opacity: 0.85; }
+    .sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── Main Layout ── */
+    main {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 28px 2rem 60px;
+    }
+
+    /* ── Controls Bar ── */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+    }
+    .controls label {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .date-input {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text-primary);
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+    }
+    .date-input:focus { outline: none; border-color: var(--accent); }
+    .range-btn {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .range-btn:hover,
+    .range-btn.active {
+      background: var(--brand-blue);
+      border-color: var(--accent);
+      color: white;
+    }
+    .refresh-btn {
+      margin-left: auto;
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text-muted);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .refresh-btn:hover { border-color: var(--accent); color: white; }
+
+    /* ── KPI Cards ── */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    .kpi-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 22px 24px;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .kpi-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--accent);
+    }
+    .kpi-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+    }
+    .kpi-card.blue::before   { background: #3b82f6; }
+    .kpi-card.orange::before { background: var(--claude-orange); }
+    .kpi-card.green::before  { background: var(--green); }
+    .kpi-card.purple::before { background: var(--purple); }
+
+    .kpi-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      margin-bottom: 10px;
+    }
+    .kpi-value {
+      font-size: 28px;
+      font-weight: 700;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+    .kpi-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .kpi-icon {
+      position: absolute;
+      right: 20px;
+      top: 20px;
+      font-size: 28px;
+      opacity: 0.15;
+    }
+
+    /* ── Chart Cards ── */
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .chart-grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 1100px) {
+      .chart-grid { grid-template-columns: 1fr; }
+      .chart-grid-3 { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 700px) {
+      .chart-grid-3 { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 24px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .card-badge {
+      font-size: 11px;
+      background: var(--brand-blue);
+      color: var(--text-muted);
+      padding: 3px 10px;
+      border-radius: 20px;
+    }
+    .chart-wrap {
+      position: relative;
+      height: 260px;
+    }
+    .chart-wrap-sm {
+      position: relative;
+      height: 220px;
+    }
+
+    /* ── Table ── */
+    .table-wrap {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    thead th {
+      text-align: left;
+      padding: 10px 14px;
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    tbody tr {
+      border-bottom: 1px solid rgba(45, 63, 85, 0.5);
+      transition: background 0.15s;
+    }
+    tbody tr:hover { background: rgba(255,255,255,0.03); }
+    tbody td {
+      padding: 12px 14px;
+      color: var(--text-primary);
+    }
+    .model-badge {
+      display: inline-block;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-weight: 500;
+    }
+    .badge-opus    { background: rgba(139,92,246,0.15); color: #a78bfa; }
+    .badge-sonnet  { background: rgba(59,130,246,0.15); color: #60a5fa; }
+    .badge-haiku   { background: rgba(16,185,129,0.15); color: #34d399; }
+    .badge-other   { background: rgba(148,163,184,0.1); color: #94a3b8; }
+
+    .bar-mini {
+      height: 6px;
+      border-radius: 3px;
+      background: var(--brand-blue);
+      margin-top: 6px;
+      transition: width 0.6s ease;
+    }
+
+    /* ── Loading / Error ── */
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(26,26,46,0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .spinner {
+      width: 44px;
+      height: 44px;
+      border: 4px solid var(--card-border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { color: var(--text-muted); font-size: 14px; }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 14px 20px;
+      font-size: 13px;
+      z-index: 300;
+      max-width: 320px;
+      transform: translateY(80px);
+      opacity: 0;
+      transition: all 0.3s ease;
+    }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.success { border-left: 3px solid var(--green); }
+    .toast.error   { border-left: 3px solid var(--accent); }
+
+    .last-updated {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loadingOverlay" class="loading-overlay">
+  <div class="spinner"></div>
+  <div class="loading-text">Loading usage data…</div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<!-- Header -->
+<header>
+  <div class="header-left">
+    <div class="logo-badge">DP</div>
+    <div>
+      <div class="header-title">Claude API Usage Dashboard</div>
+      <div class="header-subtitle">Daversa Partners · Powered by Anthropic</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="status-dot" id="statusDot" title="Live"></div>
+    <span class="last-updated" id="lastUpdated">–</span>
+    <button class="sync-btn" id="syncBtn" onclick="triggerSync()">↻ Sync Now</button>
+  </div>
+</header>
+
+<!-- Main -->
+<main>
+
+  <!-- Controls -->
+  <div class="controls">
+    <label>From</label>
+    <input type="date" class="date-input" id="startDate" />
+    <label>To</label>
+    <input type="date" class="date-input" id="endDate" />
+    <button class="range-btn" onclick="setRange(7)">7d</button>
+    <button class="range-btn active" onclick="setRange(30)">30d</button>
+    <button class="range-btn" onclick="setRange(90)">90d</button>
+    <button class="refresh-btn" onclick="loadData()">Refresh ↺</button>
+  </div>
+
+  <!-- KPI Cards -->
+  <div class="kpi-grid">
+    <div class="kpi-card blue">
+      <div class="kpi-icon">🔢</div>
+      <div class="kpi-label">Total Tokens</div>
+      <div class="kpi-value" id="kpiTokens">–</div>
+      <div class="kpi-sub" id="kpiTokensSub">input + output</div>
+    </div>
+    <div class="kpi-card orange">
+      <div class="kpi-icon">💰</div>
+      <div class="kpi-label">Total Cost</div>
+      <div class="kpi-value" id="kpiCost">–</div>
+      <div class="kpi-sub" id="kpiCostSub">USD this period</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-icon">📡</div>
+      <div class="kpi-label">API Requests</div>
+      <div class="kpi-value" id="kpiRequests">–</div>
+      <div class="kpi-sub" id="kpiRequestsSub">calls this period</div>
+    </div>
+    <div class="kpi-card purple">
+      <div class="kpi-icon">👥</div>
+      <div class="kpi-label">Active Teams</div>
+      <div class="kpi-value" id="kpiTeams">–</div>
+      <div class="kpi-sub">workspaces with usage</div>
+    </div>
+  </div>
+
+  <!-- Charts Row 1 -->
+  <div class="chart-grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Daily Usage — Tokens & Cost</div>
+        <div class="card-badge" id="dailyBadge">–</div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="dailyChart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Cost by Model</div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="modelDonut"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts Row 2 -->
+  <div class="chart-grid-3">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Requests per Day</div>
+      </div>
+      <div class="chart-wrap-sm">
+        <canvas id="requestChart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Input vs Output Tokens</div>
+      </div>
+      <div class="chart-wrap-sm">
+        <canvas id="tokenTypeChart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Cost by Team</div>
+      </div>
+      <div class="chart-wrap-sm">
+        <canvas id="teamChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model Breakdown Table -->
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-header">
+      <div class="card-title">Breakdown by Model</div>
+    </div>
+    <div class="table-wrap">
+      <table id="modelTable">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Requests</th>
+            <th>Input Tokens</th>
+            <th>Output Tokens</th>
+            <th>Total Tokens</th>
+            <th>Cost (USD)</th>
+            <th>Share</th>
+          </tr>
+        </thead>
+        <tbody id="modelTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Team Breakdown Table -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Breakdown by Team / Workspace</div>
+    </div>
+    <div class="table-wrap">
+      <table id="teamTable">
+        <thead>
+          <tr>
+            <th>Team</th>
+            <th>Requests</th>
+            <th>Total Tokens</th>
+            <th>Cost (USD)</th>
+            <th>% of Total</th>
+            <th>Spend Bar</th>
+          </tr>
+        </thead>
+        <tbody id="teamTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ─────────────────────────────────────────────
+// Globals
+// ─────────────────────────────────────────────
+let charts = {};
+const PALETTE = ['#e94560','#f97316','#3b82f6','#8b5cf6','#10b981','#06b6d4','#ec4899'];
+
+// ─────────────────────────────────────────────
+// Utils
+// ─────────────────────────────────────────────
+const fmt = {
+  number: n => n >= 1e9 ? (n/1e9).toFixed(1)+'B'
+              : n >= 1e6 ? (n/1e6).toFixed(1)+'M'
+              : n >= 1e3 ? (n/1e3).toFixed(1)+'K'
+              : n.toString(),
+  currency: n => '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}),
+  date: d => new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}),
+};
+
+function showToast(msg, type='success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast ${type} show`;
+  setTimeout(() => t.classList.remove('show'), 4000);
+}
+
+function setRange(days) {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(end.getDate() - days);
+  document.getElementById('endDate').value = end.toISOString().slice(0,10);
+  document.getElementById('startDate').value = start.toISOString().slice(0,10);
+  document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  loadData();
+}
+
+function initDates() {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(end.getDate() - 30);
+  document.getElementById('endDate').value = end.toISOString().slice(0,10);
+  document.getElementById('startDate').value = start.toISOString().slice(0,10);
+}
+
+function modelBadge(model) {
+  const m = model.toLowerCase();
+  if (m.includes('opus'))   return `<span class="model-badge badge-opus">Opus</span>`;
+  if (m.includes('sonnet')) return `<span class="model-badge badge-sonnet">Sonnet</span>`;
+  if (m.includes('haiku'))  return `<span class="model-badge badge-haiku">Haiku</span>`;
+  return `<span class="model-badge badge-other">${model.split('-')[1] || model}</span>`;
+}
+
+// ─────────────────────────────────────────────
+// Chart helpers
+// ─────────────────────────────────────────────
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+const chartDefaults = {
+  plugins: { legend: { labels: { color: '#94a3b8', font: { family: 'Inter' } } } },
+  scales: {
+    x: { ticks: { color: '#64748b', maxTicksLimit: 8 }, grid: { color: 'rgba(255,255,255,0.04)' } },
+    y: { ticks: { color: '#64748b' },                   grid: { color: 'rgba(255,255,255,0.04)' } },
+  },
+};
+
+// ─────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────
+function renderKPIs(d) {
+  const { totals, by_workspace } = d;
+  document.getElementById('kpiTokens').textContent   = fmt.number(totals.total_tokens);
+  document.getElementById('kpiCost').textContent     = fmt.currency(totals.cost_usd);
+  document.getElementById('kpiRequests').textContent = fmt.number(totals.request_count);
+  document.getElementById('kpiTeams').textContent    = by_workspace.length;
+
+  const days = Math.round((new Date(d.end_date) - new Date(d.start_date)) / 86400000) + 1;
+  document.getElementById('kpiTokensSub').textContent = `${fmt.number(Math.round(totals.total_tokens/days))}/day avg`;
+  document.getElementById('kpiCostSub').textContent   = `${fmt.currency(totals.cost_usd/days)}/day avg`;
+}
+
+function renderDailyChart(daily) {
+  destroyChart('daily');
+  const labels = daily.map(d => fmt.date(d.label));
+  document.getElementById('dailyBadge').textContent = daily.length + ' days';
+
+  const ctx = document.getElementById('dailyChart').getContext('2d');
+  charts.daily = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Total Tokens',
+          data: daily.map(d => d.total_tokens),
+          backgroundColor: 'rgba(59,130,246,0.35)',
+          borderColor: '#3b82f6',
+          borderWidth: 1,
+          yAxisID: 'y',
+          order: 2,
+        },
+        {
+          label: 'Cost (USD)',
+          data: daily.map(d => d.cost_usd),
+          type: 'line',
+          borderColor: '#e94560',
+          backgroundColor: 'rgba(233,69,96,0.15)',
+          tension: 0.4,
+          fill: true,
+          pointRadius: 3,
+          yAxisID: 'y1',
+          order: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index' },
+      plugins: { legend: { labels: { color: '#94a3b8' } } },
+      scales: {
+        x:  { ticks: { color: '#64748b', maxTicksLimit: 10 }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y:  { ticks: { color: '#64748b', callback: v => fmt.number(v) }, grid: { color: 'rgba(255,255,255,0.04)' }, position: 'left' },
+        y1: { ticks: { color: '#e94560', callback: v => '$'+v.toFixed(0) }, grid: { drawOnChartArea: false }, position: 'right' },
+      },
+    },
+  });
+}
+
+function renderModelDonut(byModel) {
+  destroyChart('donut');
+  const ctx = document.getElementById('modelDonut').getContext('2d');
+  charts.donut = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: byModel.map(m => {
+        const parts = m.label.split('-');
+        return parts.slice(1, 3).join(' ');
+      }),
+      datasets: [{
+        data: byModel.map(m => m.cost_usd),
+        backgroundColor: PALETTE,
+        borderColor: '#1e2a3a',
+        borderWidth: 3,
+        hoverOffset: 6,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '62%',
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#94a3b8', padding: 14, font: { size: 11 } } },
+        tooltip: { callbacks: { label: ctx => ` ${fmt.currency(ctx.raw)}` } },
+      },
+    },
+  });
+}
+
+function renderRequestChart(daily) {
+  destroyChart('req');
+  const ctx = document.getElementById('requestChart').getContext('2d');
+  charts.req = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(d => fmt.date(d.label)),
+      datasets: [{
+        label: 'Requests',
+        data: daily.map(d => d.request_count),
+        borderColor: '#10b981',
+        backgroundColor: 'rgba(16,185,129,0.12)',
+        tension: 0.4,
+        fill: true,
+        pointRadius: 2,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 6 }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.04)' } },
+      },
+    },
+  });
+}
+
+function renderTokenTypeChart(daily) {
+  destroyChart('tokType');
+  const ctx = document.getElementById('tokenTypeChart').getContext('2d');
+  charts.tokType = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: daily.map(d => fmt.date(d.label)),
+      datasets: [
+        {
+          label: 'Input',
+          data: daily.map(d => d.input_tokens),
+          backgroundColor: 'rgba(139,92,246,0.6)',
+          stack: 'tokens',
+        },
+        {
+          label: 'Output',
+          data: daily.map(d => d.output_tokens),
+          backgroundColor: 'rgba(249,115,22,0.6)',
+          stack: 'tokens',
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#94a3b8' } } },
+      scales: {
+        x: { stacked: true, ticks: { color: '#64748b', maxTicksLimit: 6 }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { stacked: true, ticks: { color: '#64748b', callback: v => fmt.number(v) }, grid: { color: 'rgba(255,255,255,0.04)' } },
+      },
+    },
+  });
+}
+
+function renderTeamChart(byWorkspace) {
+  destroyChart('team');
+  const ctx = document.getElementById('teamChart').getContext('2d');
+  charts.team = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: byWorkspace.map(w => w.label),
+      datasets: [{
+        label: 'Cost (USD)',
+        data: byWorkspace.map(w => w.cost_usd),
+        backgroundColor: PALETTE.slice(0, byWorkspace.length),
+        borderRadius: 6,
+      }],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#64748b', callback: v => '$'+v.toFixed(0) }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { ticks: { color: '#94a3b8' }, grid: { display: false } },
+      },
+    },
+  });
+}
+
+function renderModelTable(byModel) {
+  const total = byModel.reduce((s, m) => s + m.cost_usd, 0);
+  const tbody = document.getElementById('modelTableBody');
+  tbody.innerHTML = byModel.map(m => {
+    const pct = total > 0 ? (m.cost_usd / total * 100).toFixed(1) : 0;
+    return `
+      <tr>
+        <td>${modelBadge(m.label)} <span style="margin-left:8px;font-size:12px;color:#64748b">${m.label}</span></td>
+        <td>${fmt.number(m.request_count)}</td>
+        <td>${fmt.number(m.input_tokens)}</td>
+        <td>${fmt.number(m.output_tokens)}</td>
+        <td>${fmt.number(m.total_tokens)}</td>
+        <td style="color:#e94560;font-weight:600">${fmt.currency(m.cost_usd)}</td>
+        <td style="min-width:100px">
+          <div style="font-size:11px;color:#64748b">${pct}%</div>
+          <div class="bar-mini" style="width:${pct}%;background:#e94560"></div>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+function renderTeamTable(byWorkspace) {
+  const total = byWorkspace.reduce((s, w) => s + w.cost_usd, 0);
+  const tbody = document.getElementById('teamTableBody');
+  tbody.innerHTML = byWorkspace.map(w => {
+    const pct = total > 0 ? (w.cost_usd / total * 100).toFixed(1) : 0;
+    return `
+      <tr>
+        <td style="font-weight:600">${w.label}</td>
+        <td>${fmt.number(w.request_count)}</td>
+        <td>${fmt.number(w.total_tokens)}</td>
+        <td style="color:#f97316;font-weight:600">${fmt.currency(w.cost_usd)}</td>
+        <td style="color:#94a3b8">${pct}%</td>
+        <td style="min-width:120px">
+          <div class="bar-mini" style="width:${pct}%;background:#f97316;max-width:120px"></div>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+// ─────────────────────────────────────────────
+// Data loading
+// ─────────────────────────────────────────────
+async function loadData() {
+  document.getElementById('loadingOverlay').style.display = 'flex';
+
+  const start = document.getElementById('startDate').value;
+  const end   = document.getElementById('endDate').value;
+
+  try {
+    const res = await fetch(`/api/usage?start_date=${start}&end_date=${end}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+
+    if (data.error) throw new Error(data.error);
+
+    renderKPIs(data);
+    renderDailyChart(data.daily);
+    renderModelDonut(data.by_model);
+    renderRequestChart(data.daily);
+    renderTokenTypeChart(data.daily);
+    renderTeamChart(data.by_workspace);
+    renderModelTable(data.by_model);
+    renderTeamTable(data.by_workspace);
+
+    document.getElementById('lastUpdated').textContent =
+      'Updated ' + new Date().toLocaleTimeString();
+
+  } catch (err) {
+    console.error(err);
+    showToast('Failed to load data: ' + err.message, 'error');
+  } finally {
+    document.getElementById('loadingOverlay').style.display = 'none';
+  }
+}
+
+async function triggerSync() {
+  const btn = document.getElementById('syncBtn');
+  btn.disabled = true;
+  btn.textContent = '↻ Syncing…';
+
+  try {
+    const res = await fetch('/api/sync', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Synced ${data.records_synced} records (${data.mode} mode)`, 'success');
+      await loadData();
+    } else {
+      showToast('Sync failed: ' + (data.error || 'unknown'), 'error');
+    }
+  } catch (err) {
+    showToast('Sync error: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↻ Sync Now';
+  }
+}
+
+// ─────────────────────────────────────────────
+// Boot
+// ─────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', async () => {
+  initDates();
+
+  // Auto-sync on first load to populate data
+  try {
+    await fetch('/api/sync', { method: 'POST' });
+  } catch (_) {}
+
+  await loadData();
+});
+</script>
+</body>
+</html>
