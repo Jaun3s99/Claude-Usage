@@ -151,24 +151,47 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     return records
 
 
-@app.route("/api/workspaces")
-def list_workspaces():
-    """Shows raw workspace IDs from Anthropic — use these to set WORKSPACE_NAMES in Vercel."""
+@app.route("/api/debug")
+def debug():
+    """Returns raw Anthropic API responses so we can see exact field names and values."""
     try:
         headers = {
             "x-api-key": ANTHROPIC_ADMIN_KEY,
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        resp = requests.get(
-            "https://api.anthropic.com/v1/workspaces",
+        end_date   = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+
+        # Raw usage response
+        usage_resp = requests.get(
+            "https://api.anthropic.com/v1/organizations/usage_report/messages",
+            headers=headers,
+            params=[
+                ("starting_at", f"{start_date}T00:00:00Z"),
+                ("ending_at",   f"{end_date}T23:59:59Z"),
+                ("bucket_width", "1d"),
+                ("group_by[]", "model"),
+                ("group_by[]", "api_key_id"),
+                ("limit", 31),
+            ],
+            timeout=30,
+        )
+
+        # Raw API keys response
+        keys_resp = requests.get(
+            "https://api.anthropic.com/v1/api_keys",
             headers=headers,
             params={"limit": 100},
             timeout=10,
         )
-        if resp.ok:
-            return jsonify({"workspaces": resp.json().get("data", []), "manual_mapping": WORKSPACE_NAMES})
-        return jsonify({"error": f"HTTP {resp.status_code}: {resp.text[:200]}", "manual_mapping": WORKSPACE_NAMES})
+
+        return jsonify({
+            "usage_status": usage_resp.status_code,
+            "usage_sample": usage_resp.json().get("data", [])[:2] if usage_resp.ok else usage_resp.text[:500],
+            "keys_status": keys_resp.status_code,
+            "keys_data": keys_resp.json() if keys_resp.ok else keys_resp.text[:500],
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
