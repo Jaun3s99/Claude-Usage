@@ -113,7 +113,7 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
         date = bucket.get("starting_at", start_date)[:10]
         for r in bucket.get("results", []):
             model      = r.get("model", "unknown")
-            ws_id      = r.get("workspace_id", "default")
+            ws_id      = r.get("workspace_id") or "default"
             inp        = r.get("uncached_input_tokens", 0) + r.get("cache_read_input_tokens", 0)
             out        = r.get("output_tokens", 0)
 
@@ -127,7 +127,7 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
                 "date":           date,
                 "model":          model,
                 "workspace_id":   ws_id,
-                "workspace_name": ws_id,   # Console API returns ID; name shown as ID until mapped
+                "workspace_name": ws_id if ws_id != "default" else "Default",
                 "input_tokens":   inp,
                 "output_tokens":  out,
                 "total_tokens":   inp + out,
