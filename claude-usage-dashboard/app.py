@@ -34,6 +34,23 @@ USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "true").lower() == "true"
 # Anthropic Usage API
 # ──────────────────────────────────────────────
 
+def fetch_workspace_names(headers: dict) -> dict:
+    """Fetch workspace ID → name mapping from Anthropic API."""
+    try:
+        resp = requests.get(
+            "https://api.anthropic.com/v1/workspaces",
+            headers=headers,
+            params={"limit": 100},
+            timeout=10,
+        )
+        if resp.ok:
+            workspaces = resp.json().get("data", [])
+            return {ws["id"]: ws["name"] for ws in workspaces if "id" in ws and "name" in ws}
+    except Exception:
+        pass
+    return {}
+
+
 def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     """
     Fetch usage data from Anthropic's Admin API.
@@ -66,6 +83,9 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     starting_at = f"{start_date}T00:00:00Z"
     ending_at   = f"{end_date}T23:59:59Z"
 
+    # Fetch workspace name mapping (ID → readable name)
+    workspace_names = fetch_workspace_names(headers)
+
     # ── Fetch token usage ──────────────────────────────────────────
     usage_resp = requests.get(
         "https://api.anthropic.com/v1/organizations/usage_report/messages",
@@ -97,13 +117,14 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
         timeout=30,
     )
     # Build cost lookup {date: {workspace_id: cost_usd}}
+    # Note: amount is in dollars (not cents) based on API response
     cost_lookup = {}
     if cost_resp.ok:
         for bucket in cost_resp.json().get("data", []):
             date = bucket.get("starting_at", "")[:10]
             for r in bucket.get("results", []):
-                ws = r.get("workspace_id", "default")
-                amount = float(r.get("amount", 0)) / 100  # cents → dollars
+                ws = r.get("workspace_id") or "default"
+                amount = float(r.get("amount", 0))  # already in USD
                 cost_lookup.setdefault(date, {})
                 cost_lookup[date][ws] = cost_lookup[date].get(ws, 0) + amount
 
@@ -127,7 +148,7 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
                 "date":           date,
                 "model":          model,
                 "workspace_id":   ws_id,
-                "workspace_name": ws_id if ws_id != "default" else "Default",
+                "workspace_name": workspace_names.get(ws_id, ws_id if ws_id != "default" else "Default"),
                 "input_tokens":   inp,
                 "output_tokens":  out,
                 "total_tokens":   inp + out,
