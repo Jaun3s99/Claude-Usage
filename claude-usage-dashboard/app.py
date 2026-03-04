@@ -38,6 +38,10 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     """
     Fetch usage data from Anthropic's Admin API.
     Docs: https://docs.anthropic.com/en/api/administration
+
+    Uses:
+      GET /v1/organizations/usage_report/messages  — token counts by model/workspace
+      GET /v1/organizations/cost_report            — actual USD costs
     """
     if not ANTHROPIC_ADMIN_KEY:
         raise ValueError("ANTHROPIC_ADMIN_KEY is not set.")
@@ -48,49 +52,89 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
         "Content-Type": "application/json",
     }
 
-    # Try multiple known endpoint formats
-    endpoints = [
-        {
-            "url": "https://api.anthropic.com/v1/organizations/usage",
-            "params": {"start_time": f"{start_date}T00:00:00Z", "end_time": f"{end_date}T23:59:59Z"},
-        },
-        {
-            "url": "https://api.anthropic.com/v1/usage",
-            "params": {"start_date": start_date, "end_date": end_date},
-        },
-    ]
+    # Model pricing (per million tokens) as fallback if cost API unavailable
+    PRICING = {
+        "claude-opus-4-5-20251101":   (15.00, 75.00),
+        "claude-sonnet-4-5-20250929": (3.00,  15.00),
+        "claude-haiku-4-5-20251001":  (0.80,   4.00),
+        "claude-3-opus-20240229":     (15.00, 75.00),
+        "claude-3-5-sonnet-20241022": (3.00,  15.00),
+        "claude-3-5-haiku-20241022":  (0.80,   4.00),
+        "claude-3-haiku-20240307":    (0.25,   1.25),
+    }
 
-    last_error = None
-    for endpoint in endpoints:
-        try:
-            response = requests.get(
-                endpoint["url"], headers=headers,
-                params=endpoint["params"], timeout=30
-            )
-            if response.status_code == 200:
-                data = response.json()
-                records = []
-                for item in data.get("data", []):
-                    inp = item.get("input_tokens", 0)
-                    out = item.get("output_tokens", 0)
-                    records.append({
-                        "date": item.get("date", start_date),
-                        "model": item.get("model", "unknown"),
-                        "workspace_id": item.get("workspace_id", "default"),
-                        "workspace_name": item.get("workspace_name", "Default"),
-                        "input_tokens": inp,
-                        "output_tokens": out,
-                        "total_tokens": inp + out,
-                        "cost_usd": item.get("cost_usd", 0),
-                        "request_count": item.get("request_count", 0),
-                    })
-                return records
-            else:
-                last_error = f"HTTP {response.status_code} from {endpoint['url']}: {response.text[:300]}"
-        except Exception as e:
-            last_error = str(e)
+    starting_at = f"{start_date}T00:00:00Z"
+    ending_at   = f"{end_date}T23:59:59Z"
 
-    raise ValueError(f"All Anthropic API endpoints failed. Last error: {last_error}")
+    # ── Fetch token usage ──────────────────────────────────────────
+    usage_resp = requests.get(
+        "https://api.anthropic.com/v1/organizations/usage_report/messages",
+        headers=headers,
+        params={
+            "starting_at": starting_at,
+            "ending_at":   ending_at,
+            "bucket_width": "1d",
+            "group_by": ["model", "workspace_id"],
+            "limit": 1000,
+        },
+        timeout=30,
+    )
+    if not usage_resp.ok:
+        raise ValueError(f"Usage API error {usage_resp.status_code}: {usage_resp.text[:400]}")
+
+    # ── Fetch cost data ────────────────────────────────────────────
+    cost_resp = requests.get(
+        "https://api.anthropic.com/v1/organizations/cost_report",
+        headers=headers,
+        params={
+            "starting_at": starting_at,
+            "ending_at":   ending_at,
+            "bucket_width": "1d",
+            "group_by": ["workspace_id"],
+            "limit": 1000,
+        },
+        timeout=30,
+    )
+    # Build cost lookup {date: {workspace_id: cost_usd}}
+    cost_lookup = {}
+    if cost_resp.ok:
+        for bucket in cost_resp.json().get("data", []):
+            date = bucket.get("starting_at", "")[:10]
+            for r in bucket.get("results", []):
+                ws = r.get("workspace_id", "default")
+                amount = float(r.get("amount", 0)) / 100  # cents → dollars
+                cost_lookup.setdefault(date, {})
+                cost_lookup[date][ws] = cost_lookup[date].get(ws, 0) + amount
+
+    # ── Normalise into our flat record format ──────────────────────
+    records = []
+    for bucket in usage_resp.json().get("data", []):
+        date = bucket.get("starting_at", start_date)[:10]
+        for r in bucket.get("results", []):
+            model      = r.get("model", "unknown")
+            ws_id      = r.get("workspace_id", "default")
+            inp        = r.get("uncached_input_tokens", 0) + r.get("cache_read_input_tokens", 0)
+            out        = r.get("output_tokens", 0)
+
+            # Cost: use cost report if available, else estimate from pricing table
+            cost = cost_lookup.get(date, {}).get(ws_id, None)
+            if cost is None:
+                in_p, out_p = PRICING.get(model, (3.00, 15.00))
+                cost = (inp / 1_000_000 * in_p) + (out / 1_000_000 * out_p)
+
+            records.append({
+                "date":           date,
+                "model":          model,
+                "workspace_id":   ws_id,
+                "workspace_name": ws_id,   # Console API returns ID; name shown as ID until mapped
+                "input_tokens":   inp,
+                "output_tokens":  out,
+                "total_tokens":   inp + out,
+                "cost_usd":       round(cost, 6),
+                "request_count":  r.get("request_count", 0),
+            })
+
+    return records
 
 
 def generate_mock_usage(start_date: str, end_date: str) -> list:
