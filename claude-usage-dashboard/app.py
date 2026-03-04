@@ -37,17 +37,10 @@ USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "true").lower() == "true"
 def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     """
     Fetch usage data from Anthropic's Admin API.
-
     Docs: https://docs.anthropic.com/en/api/administration
-    Endpoint: GET https://api.anthropic.com/v1/organizations/usage
-
-    Requires an Admin API key (not a regular API key).
-    Create one at: https://console.anthropic.com → Settings → API Keys
-
-    The response will include per-model, per-workspace token counts and costs.
     """
     if not ANTHROPIC_ADMIN_KEY:
-        raise ValueError("ANTHROPIC_ADMIN_KEY is not set. Add it to your .env file.")
+        raise ValueError("ANTHROPIC_ADMIN_KEY is not set.")
 
     headers = {
         "x-api-key": ANTHROPIC_ADMIN_KEY,
@@ -55,33 +48,49 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
         "Content-Type": "application/json",
     }
 
-    # NOTE: Verify this endpoint at https://docs.anthropic.com
-    # The admin usage endpoint may require specific org/workspace parameters.
-    url = "https://api.anthropic.com/v1/organizations/usage"
-    params = {
-        "start_time": f"{start_date}T00:00:00Z",
-        "end_time": f"{end_date}T23:59:59Z",
-    }
+    # Try multiple known endpoint formats
+    endpoints = [
+        {
+            "url": "https://api.anthropic.com/v1/organizations/usage",
+            "params": {"start_time": f"{start_date}T00:00:00Z", "end_time": f"{end_date}T23:59:59Z"},
+        },
+        {
+            "url": "https://api.anthropic.com/v1/usage",
+            "params": {"start_date": start_date, "end_date": end_date},
+        },
+    ]
 
-    response = requests.get(url, headers=headers, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+    last_error = None
+    for endpoint in endpoints:
+        try:
+            response = requests.get(
+                endpoint["url"], headers=headers,
+                params=endpoint["params"], timeout=30
+            )
+            if response.status_code == 200:
+                data = response.json()
+                records = []
+                for item in data.get("data", []):
+                    inp = item.get("input_tokens", 0)
+                    out = item.get("output_tokens", 0)
+                    records.append({
+                        "date": item.get("date", start_date),
+                        "model": item.get("model", "unknown"),
+                        "workspace_id": item.get("workspace_id", "default"),
+                        "workspace_name": item.get("workspace_name", "Default"),
+                        "input_tokens": inp,
+                        "output_tokens": out,
+                        "total_tokens": inp + out,
+                        "cost_usd": item.get("cost_usd", 0),
+                        "request_count": item.get("request_count", 0),
+                    })
+                return records
+            else:
+                last_error = f"HTTP {response.status_code} from {endpoint['url']}: {response.text[:300]}"
+        except Exception as e:
+            last_error = str(e)
 
-    # Normalize response into our standard format
-    records = []
-    for item in data.get("data", []):
-        records.append({
-            "date": item.get("date", start_date),
-            "model": item.get("model", "unknown"),
-            "workspace_id": item.get("workspace_id", "default"),
-            "workspace_name": item.get("workspace_name", "Default"),
-            "input_tokens": item.get("input_tokens", 0),
-            "output_tokens": item.get("output_tokens", 0),
-            "total_tokens": item.get("input_tokens", 0) + item.get("output_tokens", 0),
-            "cost_usd": item.get("cost_usd", 0),
-            "request_count": item.get("request_count", 0),
-        })
-    return records
+    raise ValueError(f"All Anthropic API endpoints failed. Last error: {last_error}")
 
 
 def generate_mock_usage(start_date: str, end_date: str) -> list:
@@ -219,7 +228,7 @@ def sync():
         })
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": str(e), "hint": "Check your ANTHROPIC_ADMIN_KEY and visit https://docs.anthropic.com/en/api/administration for the correct endpoint"}), 500
 
 
 @app.route("/api/usage")
