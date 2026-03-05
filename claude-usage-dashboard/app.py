@@ -268,7 +268,7 @@ def debug():
             timeout=30,
         )
 
-        # Raw cost report — this tells us exact amount format (USD vs cents)
+        # Raw cost report — using workspace_id (api_key_id is not a valid group_by)
         cost_resp = requests.get(
             "https://api.anthropic.com/v1/organizations/cost_report",
             headers=headers,
@@ -276,7 +276,7 @@ def debug():
                 ("starting_at", f"{start_date}T00:00:00Z"),
                 ("ending_at",   f"{end_date}T23:59:59Z"),
                 ("bucket_width", "1d"),
-                ("group_by[]",  "api_key_id"),
+                ("group_by[]",  "workspace_id"),
                 ("limit", 31),
             ],
             timeout=30,
