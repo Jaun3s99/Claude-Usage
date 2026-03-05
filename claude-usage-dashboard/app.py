@@ -208,7 +208,7 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
 
 @app.route("/api/debug")
 def debug():
-    """Returns raw Anthropic API responses so we can see exact field names and values."""
+    """Returns raw Anthropic API responses so we can diagnose cost and key issues."""
     try:
         headers = {
             "x-api-key": ANTHROPIC_ADMIN_KEY,
@@ -218,7 +218,7 @@ def debug():
         end_date   = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
 
-        # Raw usage response
+        # Raw usage response (tokens)
         usage_resp = requests.get(
             "https://api.anthropic.com/v1/organizations/usage_report/messages",
             headers=headers,
@@ -228,6 +228,20 @@ def debug():
                 ("bucket_width", "1d"),
                 ("group_by[]", "model"),
                 ("group_by[]", "api_key_id"),
+                ("limit", 31),
+            ],
+            timeout=30,
+        )
+
+        # Raw cost report — this tells us exact amount format (USD vs cents)
+        cost_resp = requests.get(
+            "https://api.anthropic.com/v1/organizations/cost_report",
+            headers=headers,
+            params=[
+                ("starting_at", f"{start_date}T00:00:00Z"),
+                ("ending_at",   f"{end_date}T23:59:59Z"),
+                ("bucket_width", "1d"),
+                ("group_by[]",  "api_key_id"),
                 ("limit", 31),
             ],
             timeout=30,
@@ -244,6 +258,8 @@ def debug():
         return jsonify({
             "usage_status": usage_resp.status_code,
             "usage_sample": usage_resp.json().get("data", [])[:2] if usage_resp.ok else usage_resp.text[:500],
+            "cost_status": cost_resp.status_code,
+            "cost_sample": cost_resp.json().get("data", [])[:2] if cost_resp.ok else cost_resp.text[:500],
             "keys_status": keys_resp.status_code,
             "keys_data": keys_resp.json() if keys_resp.ok else keys_resp.text[:500],
         })
