@@ -29,9 +29,21 @@ ANTHROPIC_ADMIN_KEY = os.environ.get("ANTHROPIC_ADMIN_KEY")
 # the real API connected. Great for testing your dashboard design first.
 USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "true").lower() == "true"
 
-# Optional: manually map workspace IDs to readable names.
-# In Vercel env vars, set WORKSPACE_NAMES as JSON, e.g.:
-# {"wrkspc_abc123": "Engineering", "wrkspc_def456": "Sales"}
+# Maps your Anthropic API key IDs → readable names shown on the dashboard.
+# In Vercel, set WORKSPACE_NAMES as a single-line JSON environment variable.
+# Your 6 key IDs (from Supabase) — fill in the names on the right:
+#
+# {
+#   "apikey_01FnNDgoL3ZMVzKaTyFPhivs": "OpenClaw-2",
+#   "apikey_016VHEs2Ko1r23ZJkwBK1RNF": "Rhea",
+#   "apikey_01DxGT692EZf61pp3w1rzMLn": "Ivy",
+#   "apikey_01RxBMSZGWbDM9bD5apdRKvW": "Beth",
+#   "apikey_01KuCNK7evmwuFEXoNtdpRPt": "Paul2-api",
+#   "apikey_01RgJoQTna7fToJgg73tF4hx": "Nicole-Aria"
+# }
+#
+# NOTE: The names above are guesses based on cost order — see README for
+# how to confirm which key ID maps to which name using the /api/debug endpoint.
 try:
     WORKSPACE_NAMES = json.loads(os.environ.get("WORKSPACE_NAMES", "{}"))
 except Exception:
@@ -94,7 +106,33 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     # Fetch API key names (e.g. "Rhea", "Ivy", "Beth", "OpenClaw-2")
     api_key_names = fetch_api_key_names(headers)
 
-    # ── Fetch token usage grouped by api_key only ─────────────────
+    # ── Fetch ACTUAL costs from Anthropic cost report ─────────────
+    # This matches what the Anthropic Console shows — avoids token math errors
+    cost_resp = requests.get(
+        "https://api.anthropic.com/v1/organizations/cost_report",
+        headers=headers,
+        params=[
+            ("starting_at", starting_at),
+            ("ending_at",   ending_at),
+            ("bucket_width", "1d"),
+            ("group_by[]",  "api_key_id"),
+            ("limit", 31),
+        ],
+        timeout=30,
+    )
+    # Build cost lookup: {date: {api_key_id: cost_usd}}
+    cost_lookup = {}
+    if cost_resp.ok:
+        for bucket in cost_resp.json().get("data", []):
+            date = bucket.get("starting_at", "")[:10]
+            for r in bucket.get("results", []):
+                key = r.get("api_key_id") or "unknown"
+                # amount is returned in USD (not cents)
+                amount = float(r.get("amount", 0))
+                cost_lookup.setdefault(date, {})
+                cost_lookup[date][key] = cost_lookup[date].get(key, 0) + amount
+
+    # ── Fetch token usage grouped by api_key + model ──────────────
     usage_resp = requests.get(
         "https://api.anthropic.com/v1/organizations/usage_report/messages",
         headers=headers,
@@ -112,41 +150,55 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
         raise ValueError(f"Usage API error {usage_resp.status_code}: {usage_resp.text[:400]}")
 
     # ── Normalise into our flat record format ──────────────────────
-    records = []
+    # Tally tokens per (date, key) so we can split the cost proportionally
+    tally = {}
+    rows  = []
     for bucket in usage_resp.json().get("data", []):
         date = bucket.get("starting_at", start_date)[:10]
         for r in bucket.get("results", []):
             model  = r.get("model", "unknown")
             key_id = r.get("api_key_id") or "unknown"
-            inp    = r.get("uncached_input_tokens", 0) + r.get("cache_read_input_tokens", 0)
+            inp    = (r.get("uncached_input_tokens", 0)
+                      + r.get("cache_read_input_tokens", 0)
+                      + r.get("cache_creation", {}).get("ephemeral_5m_input_tokens", 0)
+                      + r.get("cache_creation", {}).get("ephemeral_1h_input_tokens", 0))
             out    = r.get("output_tokens", 0)
+            dk     = (date, key_id)
+            tally[dk] = tally.get(dk, 0) + inp + out
+            rows.append((date, model, key_id, inp, out))
 
-            # Cost per model using pricing table
-            in_p, out_p = PRICING.get(model, (3.00, 15.00))
-            for pkey, prices in PRICING.items():
-                if model.startswith(pkey.rsplit("-", 1)[0]):
-                    in_p, out_p = prices
-                    break
+    records = []
+    for (date, model, key_id, inp, out) in rows:
+        dk = (date, key_id)
+        total_key_tokens = tally.get(dk, 1) or 1
+
+        # Use actual cost from cost_report, split proportionally across models
+        actual_key_cost = cost_lookup.get(date, {}).get(key_id, None)
+        if actual_key_cost is not None:
+            token_share = (inp + out) / total_key_tokens
+            cost = actual_key_cost * token_share
+        else:
+            # Fallback: estimate from pricing table
+            in_p, out_p = PRICING.get(model, (15.00, 75.00))
             cost = (inp / 1_000_000 * in_p) + (out / 1_000_000 * out_p)
 
-            # Key name: manual override → API name → short ID
-            key_name = (
-                WORKSPACE_NAMES.get(key_id)
-                or api_key_names.get(key_id)
-                or f"Key-{key_id[-6:]}"
-            )
+        key_name = (
+            WORKSPACE_NAMES.get(key_id)
+            or api_key_names.get(key_id)
+            or f"Key-{key_id[-6:]}"
+        )
 
-            records.append({
-                "date":           date,
-                "model":          model,
-                "workspace_id":   key_id,
-                "workspace_name": key_name,
-                "input_tokens":   inp,
-                "output_tokens":  out,
-                "total_tokens":   inp + out,
-                "cost_usd":       round(cost, 6),
-                "request_count":  r.get("request_count", 0),
-            })
+        records.append({
+            "date":           date,
+            "model":          model,
+            "workspace_id":   key_id,
+            "workspace_name": key_name,
+            "input_tokens":   inp,
+            "output_tokens":  out,
+            "total_tokens":   inp + out,
+            "cost_usd":       round(cost, 6),
+            "request_count":  r.get("request_count", 0),
+        })
 
     return records
 
