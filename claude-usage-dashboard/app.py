@@ -182,11 +182,14 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
             in_p, out_p = PRICING.get(model, (15.00, 75.00))
             cost = (inp / 1_000_000 * in_p) + (out / 1_000_000 * out_p)
 
-        key_name = (
-            WORKSPACE_NAMES.get(key_id)
-            or api_key_names.get(key_id)
-            or f"Key-{key_id[-6:]}"
-        )
+        key_name = WORKSPACE_NAMES.get(key_id) or api_key_names.get(key_id)
+        if not key_name:
+            if WORKSPACE_NAMES:
+                # WORKSPACE_NAMES is configured — skip keys not in the whitelist
+                # (these are typically old/deleted API keys with residual history)
+                continue
+            else:
+                key_name = f"Key-{key_id[-6:]}"
 
         records.append({
             "date":           date,
