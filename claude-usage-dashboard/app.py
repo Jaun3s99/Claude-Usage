@@ -77,10 +77,13 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     Docs: https://docs.anthropic.com/en/api/administration
 
     Strategy:
-      1. Fetch actual daily org total from cost_report (grouped by workspace_id)
-      2. Fetch per-key per-model token counts from usage_report
-      3. Estimate relative costs using correct per-token-type pricing
-      4. Scale estimated costs so the daily total matches the actual cost_report total
+      1. Try cost_report grouped by api_key_id → get exact per-key daily costs.
+         If that's not supported (400), fall back to org-level total.
+      2. Fetch per-key per-model token counts from usage_report.
+      3. Estimate relative costs using correct per-token-type pricing.
+      4. If we have per-key costs: scale each key's estimated tokens so the
+         per-key total matches the actual per-key cost.
+         If we only have org total: scale everything proportionally to org total.
     """
     if not ANTHROPIC_ADMIN_KEY:
         raise ValueError("ANTHROPIC_ADMIN_KEY is not set.")
@@ -106,6 +109,13 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
         "claude-3-5-haiku-20241022":  (0.80,   4.00),
         "claude-3-haiku-20240307":    (0.25,   1.25),
         "claude-3-opus-20240229":     (15.00, 75.00),
+        # Common shorthand / alias names that may appear in the API
+        "claude-opus-4-6":            (15.00, 75.00),
+        "claude-sonnet-4-6":          (3.00,  15.00),
+        "claude-haiku-4-6":           (0.80,   4.00),
+        "claude-opus-4-5":            (15.00, 75.00),
+        "claude-sonnet-4-5":          (3.00,  15.00),
+        "claude-haiku-4-5":           (0.80,   4.00),
     }
 
     def get_pricing(model):
@@ -143,31 +153,61 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     # ── Fetch API key names ────────────────────────────────────────────
     api_key_names = fetch_api_key_names(headers)
 
-    # ── Fetch actual daily total cost from cost_report ─────────────────
-    # Try group_by=description first (may give per-key costs by name).
-    # Fall back to group_by=workspace_id (gives org total since all workspace_ids are null).
-    # api_key_id is NOT a valid group_by for this endpoint.
-    daily_actual_cost = {}
-    for group_by_val in ("description", "workspace_id"):
-        cost_resp = requests.get(
-            "https://api.anthropic.com/v1/organizations/cost_report",
-            headers=headers,
-            params=[
-                ("starting_at", starting_at),
-                ("ending_at",   ending_at),
-                ("bucket_width", "1d"),
-                ("group_by[]",  group_by_val),
-                ("limit", 31),
-            ],
-            timeout=30,
-        )
-        if cost_resp.ok:
-            for bucket in cost_resp.json().get("data", []):
-                date = bucket.get("starting_at", "")[:10]
+    # ── Fetch actual costs from cost_report ───────────────────────────
+    # Best case: group by api_key_id → exact cost per key per day.
+    # Fallback: group by workspace_id or description → org total per day,
+    #           then distribute proportionally using token math.
+    daily_key_cost  = {}   # {date: {key_id: cost_usd}} — populated if api_key_id works
+    daily_actual_cost = {} # {date: total_cost_usd}
+    cost_by_key_available = False
+
+    # First attempt: per-key costs (most accurate)
+    cost_resp = requests.get(
+        "https://api.anthropic.com/v1/organizations/cost_report",
+        headers=headers,
+        params=[
+            ("starting_at", starting_at),
+            ("ending_at",   ending_at),
+            ("bucket_width", "1d"),
+            ("group_by[]",  "api_key_id"),
+            ("limit", 31),
+        ],
+        timeout=30,
+    )
+    if cost_resp.ok:
+        cost_by_key_available = True
+        for bucket in cost_resp.json().get("data", []):
+            date = bucket.get("starting_at", "")[:10]
+            if date not in daily_key_cost:
+                daily_key_cost[date] = {}
+            for r in bucket.get("results", []):
+                key_id = r.get("api_key_id") or "unknown"
                 # amount is in cents despite currency:"USD" label — divide by 100
-                day_total = sum(float(r.get("amount", 0)) / 100 for r in bucket.get("results", []))
-                daily_actual_cost[date] = daily_actual_cost.get(date, 0) + day_total
-            break  # stop once we have a working call
+                amount = float(r.get("amount", 0)) / 100
+                daily_key_cost[date][key_id] = daily_key_cost[date].get(key_id, 0) + amount
+                daily_actual_cost[date] = daily_actual_cost.get(date, 0) + amount
+
+    if not cost_by_key_available:
+        # Fallback: org-level total for proportional distribution
+        for group_by_val in ("description", "workspace_id"):
+            cost_resp = requests.get(
+                "https://api.anthropic.com/v1/organizations/cost_report",
+                headers=headers,
+                params=[
+                    ("starting_at", starting_at),
+                    ("ending_at",   ending_at),
+                    ("bucket_width", "1d"),
+                    ("group_by[]",  group_by_val),
+                    ("limit", 31),
+                ],
+                timeout=30,
+            )
+            if cost_resp.ok:
+                for bucket in cost_resp.json().get("data", []):
+                    date = bucket.get("starting_at", "")[:10]
+                    day_total = sum(float(r.get("amount", 0)) / 100 for r in bucket.get("results", []))
+                    daily_actual_cost[date] = daily_actual_cost.get(date, 0) + day_total
+                break  # stop once we have a working call
 
     # ── Fetch per-key per-model token usage ───────────────────────────
     usage_resp = requests.get(
@@ -205,22 +245,41 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
 
             rows.append((date, model, key_id, inp, out, req, est))
 
-    # ── Sum estimated costs per day for proportional scaling ──────────
-    daily_est_total = {}
-    for (date, _, _, _, _, _, est) in rows:
+    # ── Sum estimated costs per day (and per key per day) ─────────────
+    daily_est_total = {}     # {date: total_est}
+    daily_key_est   = {}     # {date: {key_id: est_cost}}
+    for (date, _, key_id, _, _, _, est) in rows:
         daily_est_total[date] = daily_est_total.get(date, 0) + est
+        if date not in daily_key_est:
+            daily_key_est[date] = {}
+        daily_key_est[date][key_id] = daily_key_est[date].get(key_id, 0) + est
 
-    # ── Second pass: scale costs to match actual daily total ──────────
+    # ── Second pass: scale costs to match actual ───────────────────────
     records = []
     for (date, model, key_id, inp, out, req, est) in rows:
-        actual_total = daily_actual_cost.get(date)
-        est_total    = daily_est_total.get(date, 1) or 1
 
-        if actual_total is not None and est_total > 0:
-            # Anchor total to real cost, distribute proportionally by token math
-            cost = est / est_total * actual_total
+        if cost_by_key_available:
+            # Best path: exact cost per key from Anthropic's billing
+            # Distribute within key proportionally across models by token math
+            key_cost_day  = daily_key_cost.get(date, {}).get(key_id)
+            key_est_total = daily_key_est.get(date, {}).get(key_id, 0)
+            if key_cost_day is not None and key_est_total > 0:
+                cost = est / key_est_total * key_cost_day
+            else:
+                # Key not in cost_report (e.g., zero spend): use org proportional
+                actual_total = daily_actual_cost.get(date)
+                if actual_total is not None and daily_est_total.get(date, 0) > 0:
+                    cost = est / daily_est_total[date] * actual_total
+                else:
+                    cost = est
         else:
-            cost = est  # fallback if cost_report unavailable
+            # Fallback: proportional from org total
+            actual_total = daily_actual_cost.get(date)
+            est_total    = daily_est_total.get(date, 1) or 1
+            if actual_total is not None and est_total > 0:
+                cost = est / est_total * actual_total
+            else:
+                cost = est
 
         key_name = WORKSPACE_NAMES.get(key_id) or api_key_names.get(key_id)
         if not key_name:
@@ -271,6 +330,19 @@ def debug():
             timeout=30,
         )
 
+        # Try cost_report with api_key_id grouping (most useful if supported)
+        cost_key_resp = requests.get(
+            "https://api.anthropic.com/v1/organizations/cost_report",
+            headers=headers,
+            params=[
+                ("starting_at", f"{start_date}T00:00:00Z"),
+                ("ending_at",   f"{end_date}T23:59:59Z"),
+                ("bucket_width", "1d"),
+                ("group_by[]",  "api_key_id"),
+                ("limit", 31),
+            ],
+            timeout=30,
+        )
         # Try cost_report with description grouping
         cost_desc_resp = requests.get(
             "https://api.anthropic.com/v1/organizations/cost_report",
@@ -301,6 +373,8 @@ def debug():
         return jsonify({
             "usage_status": usage_resp.status_code,
             "usage_sample": usage_resp.json().get("data", [])[:2] if usage_resp.ok else usage_resp.text[:500],
+            "cost_api_key_status": cost_key_resp.status_code,
+            "cost_api_key_sample": cost_key_resp.json().get("data", [])[:2] if cost_key_resp.ok else cost_key_resp.text[:500],
             "cost_description_status": cost_desc_resp.status_code,
             "cost_description_sample": cost_desc_resp.json().get("data", [])[:2] if cost_desc_resp.ok else cost_desc_resp.text[:500],
             "cost_workspace_status": cost_ws_resp.status_code,
