@@ -76,9 +76,11 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     Fetch usage data from Anthropic's Admin API.
     Docs: https://docs.anthropic.com/en/api/administration
 
-    Uses:
-      GET /v1/organizations/usage_report/messages  — token counts by model/workspace
-      GET /v1/organizations/cost_report            — actual USD costs
+    Strategy:
+      1. Fetch actual daily org total from cost_report (grouped by workspace_id)
+      2. Fetch per-key per-model token counts from usage_report
+      3. Estimate relative costs using correct per-token-type pricing
+      4. Scale estimated costs so the daily total matches the actual cost_report total
     """
     if not ANTHROPIC_ADMIN_KEY:
         raise ValueError("ANTHROPIC_ADMIN_KEY is not set.")
@@ -89,25 +91,61 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
         "Content-Type": "application/json",
     }
 
-    # Model pricing (per million tokens) as fallback if cost API unavailable
-    PRICING = {
-        "claude-opus-4-5-20251101":   (15.00, 75.00),
-        "claude-sonnet-4-5-20250929": (3.00,  15.00),
-        "claude-haiku-4-5-20251001":  (0.80,   4.00),
-        "claude-3-opus-20240229":     (15.00, 75.00),
-        "claude-3-5-sonnet-20241022": (3.00,  15.00),
-        "claude-3-5-haiku-20241022":  (0.80,   4.00),
-        "claude-3-haiku-20240307":    (0.25,   1.25),
-    }
-
     starting_at = f"{start_date}T00:00:00Z"
     ending_at   = f"{end_date}T23:59:59Z"
 
-    # Fetch API key names (e.g. "Rhea", "Ivy", "Beth", "OpenClaw-2")
+    # ── Pricing table (input price, output price) per million tokens ───
+    # Cache write = 1.25× input price; cache read = 0.10× input price
+    PRICING = {
+        "claude-opus-4-5-20251101":   (15.00, 75.00),
+        "claude-opus-4-20250514":     (15.00, 75.00),
+        "claude-sonnet-4-5-20250929": (3.00,  15.00),
+        "claude-sonnet-4-20250514":   (3.00,  15.00),
+        "claude-haiku-4-5-20251001":  (0.80,   4.00),
+        "claude-3-5-sonnet-20241022": (3.00,  15.00),
+        "claude-3-5-haiku-20241022":  (0.80,   4.00),
+        "claude-3-haiku-20240307":    (0.25,   1.25),
+        "claude-3-opus-20240229":     (15.00, 75.00),
+    }
+
+    def get_pricing(model):
+        """Return (input_price, output_price) per million tokens.
+        Falls back to pattern matching for newer model versions."""
+        if model in PRICING:
+            return PRICING[model]
+        m = model.lower()
+        if "haiku"  in m: return (0.80,  4.00)
+        if "sonnet" in m: return (3.00, 15.00)
+        if "opus"   in m: return (15.00, 75.00)
+        return (3.00, 15.00)  # safe middle-ground default
+
+    def estimate_cost(r, model):
+        """Estimate cost using correct pricing for each token type.
+        Cache read tokens cost 0.10× input price (not full price).
+        Cache write tokens cost 1.25× input price."""
+        in_p, out_p = get_pricing(model)
+        cache_write_p = in_p * 1.25
+        cache_read_p  = in_p * 0.10
+
+        uncached   = r.get("uncached_input_tokens", 0)
+        cache_5m   = r.get("cache_creation", {}).get("ephemeral_5m_input_tokens", 0)
+        cache_1h   = r.get("cache_creation", {}).get("ephemeral_1h_input_tokens", 0)
+        cache_read = r.get("cache_read_input_tokens", 0)
+        out_tok    = r.get("output_tokens", 0)
+
+        return (
+            uncached            / 1_000_000 * in_p
+            + (cache_5m + cache_1h) / 1_000_000 * cache_write_p
+            + cache_read        / 1_000_000 * cache_read_p
+            + out_tok           / 1_000_000 * out_p
+        )
+
+    # ── Fetch API key names ────────────────────────────────────────────
     api_key_names = fetch_api_key_names(headers)
 
-    # ── Fetch ACTUAL costs from Anthropic cost report ─────────────
-    # This matches what the Anthropic Console shows — avoids token math errors
+    # ── Fetch actual daily total cost from cost_report ─────────────────
+    # group_by=api_key_id is NOT supported by this endpoint.
+    # group_by=workspace_id gives us org total (all workspace_ids are null here).
     cost_resp = requests.get(
         "https://api.anthropic.com/v1/organizations/cost_report",
         headers=headers,
@@ -115,24 +153,20 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
             ("starting_at", starting_at),
             ("ending_at",   ending_at),
             ("bucket_width", "1d"),
-            ("group_by[]",  "api_key_id"),
+            ("group_by[]",  "workspace_id"),
             ("limit", 31),
         ],
         timeout=30,
     )
-    # Build cost lookup: {date: {api_key_id: cost_usd}}
-    cost_lookup = {}
+    # daily_actual_cost = {date: total_usd_that_day_for_whole_org}
+    daily_actual_cost = {}
     if cost_resp.ok:
         for bucket in cost_resp.json().get("data", []):
             date = bucket.get("starting_at", "")[:10]
-            for r in bucket.get("results", []):
-                key = r.get("api_key_id") or "unknown"
-                # amount is returned in USD (not cents)
-                amount = float(r.get("amount", 0))
-                cost_lookup.setdefault(date, {})
-                cost_lookup[date][key] = cost_lookup[date].get(key, 0) + amount
+            day_total = sum(float(r.get("amount", 0)) for r in bucket.get("results", []))
+            daily_actual_cost[date] = day_total
 
-    # ── Fetch token usage grouped by api_key + model ──────────────
+    # ── Fetch per-key per-model token usage ───────────────────────────
     usage_resp = requests.get(
         "https://api.anthropic.com/v1/organizations/usage_report/messages",
         headers=headers,
@@ -149,45 +183,46 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     if not usage_resp.ok:
         raise ValueError(f"Usage API error {usage_resp.status_code}: {usage_resp.text[:400]}")
 
-    # ── Normalise into our flat record format ──────────────────────
-    # Tally tokens per (date, key) so we can split the cost proportionally
-    tally = {}
-    rows  = []
+    # ── First pass: compute estimated cost per row ─────────────────────
+    rows = []
     for bucket in usage_resp.json().get("data", []):
         date = bucket.get("starting_at", start_date)[:10]
         for r in bucket.get("results", []):
-            model  = r.get("model", "unknown")
-            key_id = r.get("api_key_id") or "unknown"
-            inp    = (r.get("uncached_input_tokens", 0)
-                      + r.get("cache_read_input_tokens", 0)
-                      + r.get("cache_creation", {}).get("ephemeral_5m_input_tokens", 0)
-                      + r.get("cache_creation", {}).get("ephemeral_1h_input_tokens", 0))
-            out    = r.get("output_tokens", 0)
-            dk     = (date, key_id)
-            tally[dk] = tally.get(dk, 0) + inp + out
-            rows.append((date, model, key_id, inp, out))
+            model   = r.get("model", "unknown")
+            key_id  = r.get("api_key_id") or "unknown"
+            est     = estimate_cost(r, model)
 
+            uncached   = r.get("uncached_input_tokens", 0)
+            cache_5m   = r.get("cache_creation", {}).get("ephemeral_5m_input_tokens", 0)
+            cache_1h   = r.get("cache_creation", {}).get("ephemeral_1h_input_tokens", 0)
+            cache_read = r.get("cache_read_input_tokens", 0)
+            inp = uncached + cache_read + cache_5m + cache_1h
+            out = r.get("output_tokens", 0)
+            req = r.get("request_count", 0)
+
+            rows.append((date, model, key_id, inp, out, req, est))
+
+    # ── Sum estimated costs per day for proportional scaling ──────────
+    daily_est_total = {}
+    for (date, _, _, _, _, _, est) in rows:
+        daily_est_total[date] = daily_est_total.get(date, 0) + est
+
+    # ── Second pass: scale costs to match actual daily total ──────────
     records = []
-    for (date, model, key_id, inp, out) in rows:
-        dk = (date, key_id)
-        total_key_tokens = tally.get(dk, 1) or 1
+    for (date, model, key_id, inp, out, req, est) in rows:
+        actual_total = daily_actual_cost.get(date)
+        est_total    = daily_est_total.get(date, 1) or 1
 
-        # Use actual cost from cost_report, split proportionally across models
-        actual_key_cost = cost_lookup.get(date, {}).get(key_id, None)
-        if actual_key_cost is not None:
-            token_share = (inp + out) / total_key_tokens
-            cost = actual_key_cost * token_share
+        if actual_total is not None and est_total > 0:
+            # Anchor total to real cost, distribute proportionally by token math
+            cost = est / est_total * actual_total
         else:
-            # Fallback: estimate from pricing table
-            in_p, out_p = PRICING.get(model, (15.00, 75.00))
-            cost = (inp / 1_000_000 * in_p) + (out / 1_000_000 * out_p)
+            cost = est  # fallback if cost_report unavailable
 
         key_name = WORKSPACE_NAMES.get(key_id) or api_key_names.get(key_id)
         if not key_name:
             if WORKSPACE_NAMES:
-                # WORKSPACE_NAMES is configured — skip keys not in the whitelist
-                # (these are typically old/deleted API keys with residual history)
-                continue
+                continue  # skip unrecognised keys when whitelist is configured
             else:
                 key_name = f"Key-{key_id[-6:]}"
 
@@ -200,7 +235,7 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
             "output_tokens":  out,
             "total_tokens":   inp + out,
             "cost_usd":       round(cost, 6),
-            "request_count":  r.get("request_count", 0),
+            "request_count":  req,
         })
 
     return records
