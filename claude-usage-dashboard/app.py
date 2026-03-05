@@ -144,27 +144,30 @@ def fetch_anthropic_usage(start_date: str, end_date: str) -> list:
     api_key_names = fetch_api_key_names(headers)
 
     # ── Fetch actual daily total cost from cost_report ─────────────────
-    # group_by=api_key_id is NOT supported by this endpoint.
-    # group_by=workspace_id gives us org total (all workspace_ids are null here).
-    cost_resp = requests.get(
-        "https://api.anthropic.com/v1/organizations/cost_report",
-        headers=headers,
-        params=[
-            ("starting_at", starting_at),
-            ("ending_at",   ending_at),
-            ("bucket_width", "1d"),
-            ("group_by[]",  "workspace_id"),
-            ("limit", 31),
-        ],
-        timeout=30,
-    )
-    # daily_actual_cost = {date: total_usd_that_day_for_whole_org}
+    # Try group_by=description first (may give per-key costs by name).
+    # Fall back to group_by=workspace_id (gives org total since all workspace_ids are null).
+    # api_key_id is NOT a valid group_by for this endpoint.
     daily_actual_cost = {}
-    if cost_resp.ok:
-        for bucket in cost_resp.json().get("data", []):
-            date = bucket.get("starting_at", "")[:10]
-            day_total = sum(float(r.get("amount", 0)) for r in bucket.get("results", []))
-            daily_actual_cost[date] = day_total
+    for group_by_val in ("description", "workspace_id"):
+        cost_resp = requests.get(
+            "https://api.anthropic.com/v1/organizations/cost_report",
+            headers=headers,
+            params=[
+                ("starting_at", starting_at),
+                ("ending_at",   ending_at),
+                ("bucket_width", "1d"),
+                ("group_by[]",  group_by_val),
+                ("limit", 31),
+            ],
+            timeout=30,
+        )
+        if cost_resp.ok:
+            for bucket in cost_resp.json().get("data", []):
+                date = bucket.get("starting_at", "")[:10]
+                # amount is in cents despite currency:"USD" label — divide by 100
+                day_total = sum(float(r.get("amount", 0)) / 100 for r in bucket.get("results", []))
+                daily_actual_cost[date] = daily_actual_cost.get(date, 0) + day_total
+            break  # stop once we have a working call
 
     # ── Fetch per-key per-model token usage ───────────────────────────
     usage_resp = requests.get(
@@ -268,8 +271,21 @@ def debug():
             timeout=30,
         )
 
-        # Raw cost report — using workspace_id (api_key_id is not a valid group_by)
-        cost_resp = requests.get(
+        # Try cost_report with description grouping
+        cost_desc_resp = requests.get(
+            "https://api.anthropic.com/v1/organizations/cost_report",
+            headers=headers,
+            params=[
+                ("starting_at", f"{start_date}T00:00:00Z"),
+                ("ending_at",   f"{end_date}T23:59:59Z"),
+                ("bucket_width", "1d"),
+                ("group_by[]",  "description"),
+                ("limit", 31),
+            ],
+            timeout=30,
+        )
+        # Try cost_report with workspace_id grouping
+        cost_ws_resp = requests.get(
             "https://api.anthropic.com/v1/organizations/cost_report",
             headers=headers,
             params=[
@@ -282,21 +298,13 @@ def debug():
             timeout=30,
         )
 
-        # Raw API keys response
-        keys_resp = requests.get(
-            "https://api.anthropic.com/v1/api_keys",
-            headers=headers,
-            params={"limit": 100},
-            timeout=10,
-        )
-
         return jsonify({
             "usage_status": usage_resp.status_code,
             "usage_sample": usage_resp.json().get("data", [])[:2] if usage_resp.ok else usage_resp.text[:500],
-            "cost_status": cost_resp.status_code,
-            "cost_sample": cost_resp.json().get("data", [])[:2] if cost_resp.ok else cost_resp.text[:500],
-            "keys_status": keys_resp.status_code,
-            "keys_data": keys_resp.json() if keys_resp.ok else keys_resp.text[:500],
+            "cost_description_status": cost_desc_resp.status_code,
+            "cost_description_sample": cost_desc_resp.json().get("data", [])[:2] if cost_desc_resp.ok else cost_desc_resp.text[:500],
+            "cost_workspace_status": cost_ws_resp.status_code,
+            "cost_workspace_sample": cost_ws_resp.json().get("data", [])[:2] if cost_ws_resp.ok else cost_ws_resp.text[:500],
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
