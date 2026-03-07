@@ -121,30 +121,67 @@ def health():
 @app.route("/api/debug")
 def debug():
     """
-    Returns raw API responses — visit /api/debug in your browser to see
-    the exact field names and values the Anthropic API is sending back.
-    This helps diagnose unit/field-name issues.
+    Probes multiple possible Anthropic Admin API endpoints and returns
+    raw responses so we can find the right URL and field names.
+    Visit /api/debug in your browser.
     """
     if not ADMIN_KEY:
         return jsonify({"error": "ANTHROPIC_ADMIN_KEY not set"}), 500
-    try:
-        days = int(request.args.get("days", 7))
-        key_raw   = fetch_cost_report("api_key_id",  days)
-        model_raw = fetch_cost_report("description", days)
-        keys_raw  = requests.get(
-            f"{ADMIN_BASE}/v1/organizations/api_keys",
-            headers=_admin_headers(), timeout=10,
-        ).json()
-        return jsonify({
-            "note": "Raw API responses — use field names here to fix parsing",
-            "cost_by_key_first_3_rows":   get_rows(key_raw)[:3],
-            "cost_by_model_first_3_rows": get_rows(model_raw)[:3],
-            "api_keys_first_3":           keys_raw.get("data", [])[:3],
-            "full_key_report_keys":       list(key_raw.keys()),
-            "days": days,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+
+    results = {}
+    days = int(request.args.get("days", 7))
+    p = date_params(days)
+
+    # Try every plausible endpoint path
+    candidates = [
+        ("cost_report_by_key",   "/v1/organizations/cost_report",  {"group_by[]": "api_key_id",  **p}),
+        ("cost_report_by_model", "/v1/organizations/cost_report",  {"group_by[]": "description", **p}),
+        ("usage_by_key",         "/v1/organizations/usage",        {"group_by[]": "api_key_id",  **p}),
+        ("usage_by_model",       "/v1/organizations/usage",        {"group_by[]": "model",       **p}),
+        ("spend",                "/v1/organizations/spend",        {**p}),
+        ("api_keys",             "/v1/organizations/api_keys",     {}),
+    ]
+
+    for label, path, params in candidates:
+        try:
+            r = requests.get(
+                f"{ADMIN_BASE}{path}",
+                headers=_admin_headers(),
+                params=params,
+                timeout=10,
+            )
+            if r.ok:
+                body = r.json()
+                rows = get_rows(body)
+                results[label] = {
+                    "status":     r.status_code,
+                    "url":        path,
+                    "top_keys":   list(body.keys()),
+                    "row_count":  len(rows),
+                    "first_row":  rows[0] if rows else None,
+                }
+            else:
+                results[label] = {
+                    "status": r.status_code,
+                    "url":    path,
+                    "error":  r.text[:200],
+                }
+        except Exception as e:
+            results[label] = {"url": path, "error": str(e)}
+
+    return jsonify({"days_queried": days, "endpoints": results})
+
+
+@app.route("/api/probe")
+def probe():
+    """Quick check — just tests the admin key is valid."""
+    if not ADMIN_KEY:
+        return jsonify({"error": "ANTHROPIC_ADMIN_KEY not set"}), 500
+    r = requests.get(
+        f"{ADMIN_BASE}/v1/organizations/api_keys",
+        headers=_admin_headers(), timeout=10,
+    )
+    return jsonify({"status": r.status_code, "ok": r.ok, "body": r.json() if r.ok else r.text[:300]})
 
 
 @app.route("/api/usage")
