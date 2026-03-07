@@ -18,7 +18,8 @@ KNOWN_NAMES = json.loads(os.environ.get("KEY_NAMES", "{}"))
 
 def _admin_headers():
     return {
-        "anthropic-admin-key": ADMIN_KEY,
+        "x-api-key": ADMIN_KEY,
+        "anthropic-version": "2023-06-01",
         "Content-Type": "application/json",
     }
 
