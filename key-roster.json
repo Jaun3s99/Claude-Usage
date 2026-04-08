@@ -1,0 +1,30 @@
+{
+  "last_updated": "2026-04-07",
+  "description": "API key roster and workspace map for the Claude Usage Dashboard. Update this file when keys are added or removed.",
+  "workspaces": {
+    "wrkspc_01SAubCFa5LchC95dGipUcMz": "Laura",
+    "wrkspc_019yAfecyHQJ751Ddh8GQ9BX": "Nicolette",
+    "wrkspc_01Ua62B8mQY1gnrR8r2TEh8c": "Megan",
+    "wrkspc_015Qc1zDemTHzm69Dmk7jJvd": "Paul",
+    "wrkspc_01LbMf1KDqUzE5uxznPoMtKW": "Christen",
+    "default": "Default (shared)"
+  },
+  "keys": [
+    { "name": "Rhea",       "owner": "Laura",      "workspace": "Laura",    "status": "active", "color": "#6366f1" },
+    { "name": "Beth",       "owner": "Nicolette",  "workspace": "Nicolette","status": "active", "color": "#0ea5e9" },
+    { "name": "Ivy",        "owner": "Megan",      "workspace": "Megan",    "status": "active", "color": "#10b981" },
+    { "name": "Paul",       "owner": "Paul",       "workspace": "Paul",     "status": "active", "color": "#ef4444" },
+    { "name": "Crosby",     "owner": "Christen",   "workspace": "Christen", "status": "active", "color": "#14b8a6", "note": "Key created 2026-04-07, replacing archived key from 2026-03-23" },
+    { "name": "OpenClaw-2", "owner": "Shared",     "workspace": "Default",  "status": "active", "color": "#f59e0b" },
+    { "name": "Paul2-api",  "owner": "Paul",       "workspace": "Default",  "status": "active", "color": "#ec4899" },
+    { "name": "Nicole-Aria","owner": "Nicole-Aria", "workspace": "Default", "status": "active", "color": "#8b5cf6" },
+    { "name": "Rhea-2",     "owner": "Laura",      "workspace": "Default",  "status": "active", "color": "#14b8a6" }
+  ],
+  "excluded_keys": [
+    { "name": "Zeus v2",       "reason": "No spend — excluded until usage begins" },
+    { "name": "Claude Dashboard", "reason": "Internal dashboard chat key — not a recruiter agent" },
+    { "name": "API-Key-Juan",  "reason": "Archived" },
+    { "name": "Juanito-bot",   "reason": "Archived" }
+  ],
+  "primary_keys_order": ["Rhea", "Beth", "Ivy", "OpenClaw-2", "Paul", "Paul2-api", "Nicole-Aria", "Rhea-2", "Crosby"]
+}
